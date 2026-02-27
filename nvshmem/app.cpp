@@ -1,6 +1,5 @@
 #include "mpi.h"
 #include <cstdio>
-#include <cuda_runtime.h>
 #include <iostream>
 #include <nvshmem_host.h>
 
