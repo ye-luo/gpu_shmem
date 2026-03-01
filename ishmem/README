@@ -1,1 +1,2 @@
 cmake -DCMAKE_CXX_COMPILER=icpx -DCMAKE_CXX_FLAGS="-fiopenmp -fopenmp-targets=spir64" ..
+mpiexec -np 12 gpu_tile_compact.sh ./my_ishmem_app
