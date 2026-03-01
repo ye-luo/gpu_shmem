@@ -7,7 +7,11 @@
 #define N 10
 
 int main() {
-  MPI_Init(NULL, NULL);
+  // MPI_Init_thread MPI_THREAD_MULTIPLE seems required. Otherwise, got
+  // [0000] WARN: ishmemi_runtime_mpi
+  // [0000]        Failed to initialize MPI with MPI_THREAD_MULTIPLE
+  int provided;
+  MPI_Init_thread(NULL, NULL, MPI_THREAD_MULTIPLE, &provided);
   MPI_Comm mpi_comm = MPI_COMM_WORLD;
   ishmemx_attr_t attr;
 
