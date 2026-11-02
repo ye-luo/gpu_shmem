@@ -1,15 +1,26 @@
 #include "mpi.h"
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
-#include <sycl/sycl.hpp>
-#include "oneapi/ccl.hpp"
+#include <omp.h>
+#include "oneapi/ccl.h"
+
+#define ONECCL_CHECK(cmd)                                                      \
+  do {                                                                         \
+    onecclResult_t r = cmd;                                                    \
+    if (r != onecclSuccess) {                                                  \
+      printf("[ONECCL ERROR] %s:%d: %s\n", __FILE__, __LINE__,                 \
+             onecclGetErrorString(r));                                         \
+      exit(EXIT_FAILURE);                                                      \
+    }                                                                          \
+  } while (0)
 
 #define N 10
 
-int main() {
+int main(int argc, char *argv[]) {
   int provided;
   // FUNNELED or MPI_Init hit segfault.
-  MPI_Init_thread(NULL, NULL, MPI_THREAD_MULTIPLE, &provided);
+  MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
   MPI_Comm mpi_comm = MPI_COMM_WORLD;
 
   int my_pe = 0;
@@ -25,40 +36,35 @@ int main() {
     return 1;
   }
 
-  /* Initialize oneCCL */
-  ccl::init();
+  /* Assign device per rank */
+  int num_gpus = omp_get_num_devices();
+  int local_rank = (num_gpus > 0) ? (my_pe % num_gpus) : 0;
+  ONECCL_CHECK(onecclSetDevice(local_rank));
+  omp_set_default_device(local_rank);
 
-  /* Create KVS and share its address among all ranks via MPI broadcast */
-  ccl::shared_ptr_class<ccl::kvs> kvs;
-  ccl::kvs::address_type main_addr;
+  /* Initialize oneCCL communicator with unique ID exchange via MPI */
+  onecclUniqueId id;
   if (my_pe == 0) {
-    kvs = ccl::create_main_kvs();
-    main_addr = kvs->get_address();
-    MPI_Bcast((void *)main_addr.data(), main_addr.size(), MPI_BYTE, 0, mpi_comm);
-  } else {
-    MPI_Bcast((void *)main_addr.data(), main_addr.size(), MPI_BYTE, 0, mpi_comm);
-    kvs = ccl::create_kvs(main_addr);
+    ONECCL_CHECK(onecclGetUniqueId(&id));
   }
+  MPI_Bcast(&id, sizeof(id), MPI_BYTE, 0, mpi_comm);
 
-  /* Create SYCL queue on GPU and oneCCL communicator */
-  sycl::queue q(sycl::gpu_selector_v);
-  auto dev = ccl::create_device(q.get_device());
-  auto ctx = ccl::create_context(q.get_context());
-  auto comm = ccl::create_communicator(npes, my_pe, dev, ctx, kvs);
+  onecclComm_t comm;
+  ONECCL_CHECK(onecclCommInitRank(&comm, npes, id, my_pe));
 
-  /* Allocate objects on device memory */
-  int *src = sycl::malloc_device<int>(N, q);
-  int *dst = sycl::malloc_device<int>(N, q);
+  /* Allocate symmetric memory accessible by all PEs */
+  int *src = nullptr;
+  int *dst = nullptr;
+  ONECCL_CHECK(onecclMemAlloc((void **)&src, N * sizeof(int)));
+  ONECCL_CHECK(onecclMemAlloc((void **)&dst, N * sizeof(int)));
 
-  /* Register symmetric memory windows (accessible by all PEs) */
-  ccl::window_t win_src = ccl::comm_window_register_v2(comm, src, N * sizeof(int), 0);
-  ccl::window_t win_dst = ccl::comm_window_register_v2(comm, dst, N * sizeof(int), 0);
-
-  if (!win_src || !win_dst) {
-    std::cerr << "[PE " << my_pe
-              << "] Warning: Window registration failed or is unsupported on this hardware/topology."
-              << std::endl;
-  }
+  /* Register symmetric memory windows (LSA) */
+  onecclWindow_t win_src = nullptr;
+  onecclWindow_t win_dst = nullptr;
+  ONECCL_CHECK(onecclCommWindowRegister(comm, src, N * sizeof(int), &win_src,
+                                       ONECCL_WINDOW_COLL_SYMMETRIC));
+  ONECCL_CHECK(onecclCommWindowRegister(comm, dst, N * sizeof(int), &win_dst,
+                                       ONECCL_WINDOW_COLL_SYMMETRIC));
 
   // Initialize source and destination arrays
 #pragma omp target teams distribute parallel for is_device_ptr(src, dst)
@@ -68,7 +74,7 @@ int main() {
   }
 
   // make sure dst is initialized before receiving data.
-  ccl::barrier(comm).wait();
+  MPI_Barrier(mpi_comm);
 
   /* Perform a put operation: my_pe sends its src data to the next PE's dst
    * buffer */
@@ -76,12 +82,13 @@ int main() {
 
   // Resolve target PE's dst buffer device pointer via oneCCL LSA symmetric memory
   int *target_dst = nullptr;
-  ccl::get_peer_device_pointer(win_dst, 0, target_pe, (void **)&target_dst);
+  ONECCL_CHECK(onecclGetPeerDevicePointer(win_dst, 0, target_pe,
+                                         (void **)&target_dst));
 
   if (target_dst == nullptr) {
     std::cerr << "[PE " << my_pe << "] ERROR: target_dst is NULL for target PE "
               << target_pe << "!\n"
-              << "LSA (Load/Store Access) direct peer pointer is unavailable.\n"
+              << "LSA direct peer pointer is unavailable.\n"
               << "Please verify hardware P2P/XeLink connectivity or environment settings "
               << "(e.g., CCL_TOPO_FABRIC_VERTEX_CONNECTION_CHECK=0)." << std::endl;
     MPI_Abort(mpi_comm, 1);
@@ -94,7 +101,7 @@ int main() {
   }
 
   /* Use a barrier to ensure all communication is complete across all PEs */
-  ccl::barrier(comm).wait();
+  MPI_Barrier(mpi_comm);
 
   /* Verify the data was sent correctly by the current PE (target PE's 'dst'
      should contain the data from my PE's 'src') */
@@ -124,10 +131,11 @@ int main() {
   }
 
   /* Free allocated symmetric memory and finalize the library */
-  ccl::comm_window_deregister(comm, win_src);
-  ccl::comm_window_deregister(comm, win_dst);
-  sycl::free(src, q);
-  sycl::free(dst, q);
+  ONECCL_CHECK(onecclCommWindowDeregister(comm, win_src));
+  ONECCL_CHECK(onecclCommWindowDeregister(comm, win_dst));
+  ONECCL_CHECK(onecclMemFree(src));
+  ONECCL_CHECK(onecclMemFree(dst));
+  ONECCL_CHECK(onecclCommDestroy(comm));
   MPI_Finalize();
 
   return 0;
