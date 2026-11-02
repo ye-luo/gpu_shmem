@@ -1,0 +1,2 @@
+cmake -DCMAKE_CXX_COMPILER=mpicxx -DCMAKE_CXX_FLAGS="-fopenmp --offload-arch=sm_90" ..
+mpirun -np 2 ./my_nccl_lsa_app
