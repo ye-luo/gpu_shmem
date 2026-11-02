@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <omp.h>
 #include <cuda_runtime.h>
 #include <nccl.h>
 
@@ -48,11 +49,12 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  /* Assign CUDA device per rank */
+  /* Assign CUDA & OpenMP device per rank */
   int num_gpus = 0;
   CUDA_CHECK(cudaGetDeviceCount(&num_gpus));
   int local_rank = my_pe % num_gpus;
   CUDA_CHECK(cudaSetDevice(local_rank));
+  omp_set_default_device(local_rank);
 
   /* Initialize NCCL communicator with unique ID exchange via MPI */
   ncclUniqueId id;
@@ -96,6 +98,15 @@ int main(int argc, char *argv[]) {
   int *target_dst = nullptr;
   NCCL_CHECK(
       ncclGetPeerDevicePointer(win_dst, 0, target_pe, (void **)&target_dst));
+
+  if (target_dst == nullptr) {
+    std::cerr << "[PE " << my_pe << "] ERROR: target_dst is NULL for target PE "
+              << target_pe << "!\n"
+              << "LSA (Load/Store Access) direct peer pointer is unavailable.\n"
+              << "Please verify NVLink/P2P connectivity between devices or environment settings."
+              << std::endl;
+    MPI_Abort(mpi_comm, 1);
+  }
 
   // Directly put source data into target PE's destination buffer
 #pragma omp target teams distribute parallel for is_device_ptr(target_dst, src)

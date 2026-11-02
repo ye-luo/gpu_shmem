@@ -54,6 +54,12 @@ int main() {
   ccl::window_t win_src = ccl::comm_window_register_v2(comm, src, N * sizeof(int), 0);
   ccl::window_t win_dst = ccl::comm_window_register_v2(comm, dst, N * sizeof(int), 0);
 
+  if (!win_src || !win_dst) {
+    std::cerr << "[PE " << my_pe
+              << "] Warning: Window registration failed or is unsupported on this hardware/topology."
+              << std::endl;
+  }
+
   // Initialize source and destination arrays
 #pragma omp target teams distribute parallel for is_device_ptr(src, dst)
   for (int i = 0; i < N; ++i) {
@@ -71,6 +77,15 @@ int main() {
   // Resolve target PE's dst buffer device pointer via oneCCL LSA symmetric memory
   int *target_dst = nullptr;
   ccl::get_peer_device_pointer(win_dst, 0, target_pe, (void **)&target_dst);
+
+  if (target_dst == nullptr) {
+    std::cerr << "[PE " << my_pe << "] ERROR: target_dst is NULL for target PE "
+              << target_pe << "!\n"
+              << "LSA (Load/Store Access) direct peer pointer is unavailable.\n"
+              << "Please verify hardware P2P/XeLink connectivity or environment settings "
+              << "(e.g., CCL_TOPO_FABRIC_VERTEX_CONNECTION_CHECK=0)." << std::endl;
+    MPI_Abort(mpi_comm, 1);
+  }
 
   // Directly put source data into target PE's destination buffer
 #pragma omp target teams distribute parallel for is_device_ptr(target_dst, src)
