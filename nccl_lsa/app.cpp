@@ -5,6 +5,7 @@
 #include <omp.h>
 #include <cuda_runtime.h>
 #include <nccl.h>
+#include <nccl_device.h>
 
 #ifndef NCCL_WIN_COLL_SYMMETRIC
 #define NCCL_WIN_COLL_SYMMETRIC (1 << 0)
