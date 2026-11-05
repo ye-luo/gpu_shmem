@@ -38,9 +38,10 @@ int main(int argc, char *argv[]) {
 
   /* Assign device per rank */
   int num_gpus = omp_get_num_devices();
+  std::cout << "num_gpus " << num_gpus << std::endl;
   int local_rank = (num_gpus > 0) ? (my_pe % num_gpus) : 0;
-  ONECCL_CHECK(onecclSetDevice(local_rank));
   omp_set_default_device(local_rank);
+  ONECCL_CHECK(onecclSetDevice(local_rank));
 
   /* Initialize oneCCL communicator with unique ID exchange via MPI */
   onecclUniqueId id;
@@ -62,9 +63,9 @@ int main(int argc, char *argv[]) {
   onecclWindow_t win_src = nullptr;
   onecclWindow_t win_dst = nullptr;
   ONECCL_CHECK(onecclCommWindowRegister(comm, src, N * sizeof(int), &win_src,
-                                       ONECCL_WINDOW_COLL_SYMMETRIC));
+                                       ONECCL_WINDOW_DEFAULT));
   ONECCL_CHECK(onecclCommWindowRegister(comm, dst, N * sizeof(int), &win_dst,
-                                       ONECCL_WINDOW_COLL_SYMMETRIC));
+                                       ONECCL_WINDOW_DEFAULT));
 
   // Initialize source and destination arrays
 #pragma omp target teams distribute parallel for is_device_ptr(src, dst)

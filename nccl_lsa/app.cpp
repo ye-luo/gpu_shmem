@@ -77,9 +77,9 @@ int main(int argc, char *argv[]) {
   ncclWindow_t win_src;
   ncclWindow_t win_dst;
   NCCL_CHECK(ncclCommWindowRegister(comm, src, N * sizeof(int), &win_src,
-                                    NCCL_WIN_COLL_SYMMETRIC));
+                                    NCCL_WIN_DEFAULT));
   NCCL_CHECK(ncclCommWindowRegister(comm, dst, N * sizeof(int), &win_dst,
-                                    NCCL_WIN_COLL_SYMMETRIC));
+                                    NCCL_WIN_DEFAULT));
 
   // Initialize source and destination arrays
 #pragma omp target teams distribute parallel for is_device_ptr(src, dst)
